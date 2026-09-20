@@ -129,8 +129,27 @@ func TestEditNoChangeIsSilent(t *testing.T) {
 func TestEditMissingFileFails(t *testing.T) {
 	app, tmp := newTestApp(t, 100)
 	app.Editor = noopEditor(t, tmp)
-	if _, err := app.Edit(filepath.Join(tmp, "gone.txt")); err == nil {
-		t.Error("expected error for missing file")
+	_, err := app.Edit(filepath.Join(tmp, "gone.txt"))
+	if err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("err = %v, want no-such-file guidance", err)
+	}
+}
+
+func TestEditDeletedTrackedFileSuggestsRevert(t *testing.T) {
+	app, tmp := newTestApp(t, 100)
+	file := filepath.Join(tmp, "f.txt")
+	mustSetContent(t, file, "seed\n")
+	app.Editor = overwriteEditor(t, tmp, "v1\n")
+	mustEdit(t, app, file)
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.Edit(file)
+	if err == nil {
+		t.Fatal("expected error for deleted tracked file")
+	}
+	if !strings.Contains(err.Error(), "deleted") || !strings.Contains(err.Error(), "bakon revert") {
+		t.Errorf("err = %v, want deleted + revert guidance", err)
 	}
 }
 

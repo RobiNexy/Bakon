@@ -66,6 +66,25 @@ func TestExpandHome(t *testing.T) {
 	}
 }
 
+func TestInitWritesTemplateAndNeverOverwrites(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "nested", "config.toml")
+	written, err := Init(p)
+	if err != nil || !written {
+		t.Fatalf("init = %v, %v", written, err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Store != "~/.bakon/repo" || cfg.Retention.MaxVersions != DefaultMaxVersions {
+		t.Errorf("template defaults = %+v", cfg)
+	}
+	written, err = Init(p)
+	if err != nil || written {
+		t.Errorf("second init = %v, %v; want false, nil", written, err)
+	}
+}
+
 func TestEffectiveEditor(t *testing.T) {
 	cfg := &Config{Editor: "vim"}
 	if got := cfg.EffectiveEditor(); got != "vim" {

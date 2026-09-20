@@ -51,6 +51,40 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// Template 返回带注释的默认配置模板，供 bakon config init 使用。
+func Template() string {
+	return `# bakon 全局配置
+
+# 编辑器命令，可带参数（如 "code -w"）。
+# 优先级：此配置 > $VISUAL/$EDITOR > 缺省 vi
+editor = "vim"
+
+# 版本仓库位置（存放全部版本历史的 git 仓库）
+store = "~/.bakon/repo"
+
+[retention]
+# 每个文件保留的最大版本数；0 = 不限制。
+# 可被 index.json 中 per-file 的 max_versions 覆盖。
+max_versions = 100
+`
+}
+
+// Init 写入默认配置模板。已存在时不覆盖，返回 written=false。
+func Init(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(path, []byte(Template()), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // ExpandHome 展开路径前缀的 ~（仅支持开头单独的 ~ 与 ~/ 形式）。
 func ExpandHome(p string) string {
 	if p == "~" {

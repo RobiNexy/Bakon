@@ -55,6 +55,15 @@ func NewApp(cfgPath string) (*App, error) {
 	}, nil
 }
 
+// isManaged 仅用于错误分流：判断路径是否已在 index 中。
+func (a *App) isManaged(abs string) bool {
+	idx, err := index.Load(a.IndexPath)
+	if err != nil {
+		return false
+	}
+	return idx.Get(abs) != nil
+}
+
 // Version 是单个历史版本的解析结果。
 type Version struct {
 	Ver  int
@@ -217,6 +226,15 @@ func (a *App) Edit(path string) (int, error) {
 	}
 	fi, err := os.Stat(abs)
 	if err != nil {
+		if os.IsNotExist(err) {
+			if a.isManaged(abs) {
+				// 已跟踪文件被删：指向 revert 恢复路径（revert 不要求文件存在）。
+				return 0, fmt.Errorf("tracked file was deleted: %s (restore with: bakon revert %s <ver>)", abs, abs)
+			}
+			// 不存在的未跟踪文件：报错而非创建——自动创建会让
+			// 路径打错字时凭空纳管一个空文件。
+			return 0, fmt.Errorf("no such file: %s (bakon edit only tracks existing files; create it first)", abs)
+		}
 		return 0, fmt.Errorf("cannot edit %s: %w", abs, err)
 	}
 	if fi.IsDir() {

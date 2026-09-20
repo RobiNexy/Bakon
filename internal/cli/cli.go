@@ -57,9 +57,54 @@ func Execute() error {
 		mvCmd(),
 		pruneCmd(),
 		hookCmd(),
+		configCmd(),
 		versionCmd(),
 	)
 	return root.Execute()
+}
+
+func configCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Show or initialize the global configuration",
+	}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "show",
+			Short: "Show effective configuration and file locations",
+			Args:  cobra.NoArgs,
+			RunE: func(c *cobra.Command, args []string) error {
+				app, err := newApp()
+				if err != nil {
+					return err
+				}
+				fmt.Printf("config:       %s\n", configFlag)
+				fmt.Printf("editor:       %s\n", app.Editor)
+				fmt.Printf("store:        %s\n", app.Repo.Dir)
+				fmt.Printf("index:        %s\n", app.IndexPath)
+				fmt.Printf("max_versions: %d (global, 0 = unlimited)\n", app.GlobalMax)
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "init",
+			Short: "Write the default config template (never overwrites)",
+			Args:  cobra.NoArgs,
+			RunE: func(c *cobra.Command, args []string) error {
+				written, err := config.Init(configFlag)
+				if err != nil {
+					return err
+				}
+				if written {
+					fmt.Printf("bakon: wrote %s\n", configFlag)
+				} else {
+					fmt.Printf("bakon: already exists, left untouched: %s\n", configFlag)
+				}
+				return nil
+			},
+		},
+	)
+	return cmd
 }
 
 func versionCmd() *cobra.Command {

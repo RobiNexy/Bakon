@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 交叉编译全部发布平台，产物为直接二进制（不打包），输出到 dist/。
+# 交叉编译全部发布平台并打包到 dist/。
+# 压缩包内二进制恒名 bakon（解压即用，tar 保留可执行位），
+# 版本号只体现在压缩包名与 -ldflags 注入的 version 中。
 # 用法：
 #   scripts/build.sh                 # 版本号取 git describe
 #   VERSION=v0.1.0 scripts/build.sh  # 显式指定版本号
@@ -48,10 +50,21 @@ for platform in "${PLATFORMS[@]}"; do
 
 	ext=""
 	[ "$os" = "windows" ] && ext=".exe"
-	name="bakon_${VERSION}_${os}-${suffix}${ext}"
-	go build -trimpath -ldflags "$LDFLAGS" -o "$DIST/$name" .
+	name="bakon_${VERSION}_${os}-${suffix}"
+	dir="$DIST/$name"
+	mkdir -p "$dir"
+
+	go build -trimpath -ldflags "$LDFLAGS" -o "$dir/bakon$ext" .
+	cp README.md LICENSE "$dir/"
+
+	if [ "$os" = "windows" ]; then
+		(cd "$DIST" && zip -q -r "$name.zip" "$name")
+	else
+		tar -czf "$DIST/$name.tar.gz" -C "$DIST" "$name"
+	fi
+	rm -rf "$dir"
 	echo "built $name"
 done
 
-(cd "$DIST" && sha256sum ./bakon_* > checksums.txt)
+(cd "$DIST" && sha256sum ./*.tar.gz ./*.zip > checksums.txt)
 echo "artifacts in $DIST/"

@@ -20,31 +20,33 @@ Bakon 是一个单机命令行工具：用你熟悉的编辑器修改 `nginx.con
 
 ## 安装
 
-**方式一：下载预编译二进制**（推荐）
+**方式一：下载预编译压缩包**（推荐）
 
-从 [Releases](../../releases) 直接下载对应平台的二进制，重命名为 `bakon` 放入 `PATH`。所有产物可在 `checksums.txt` 中核对 sha256。
+从 [Releases](../../releases) 下载对应平台的压缩包。包内二进制恒名 `bakon`，`tar` 解压保留可执行位，**无需手动 chmod**。sha256 见 `checksums.txt`。
 
-| 产物 | 平台 |
+| 压缩包 | 平台 |
 |---|---|
-| `bakon_<ver>_linux-amd64` | Linux x86-64 |
-| `bakon_<ver>_linux-arm64` | Linux arm64 / **Android Termux (aarch64)** |
-| `bakon_<ver>_linux-armv7` | Linux armv7 / Android Termux (32 位) |
-| `bakon_<ver>_darwin-amd64` | macOS (Intel) |
-| `bakon_<ver>_darwin-arm64` | macOS (Apple Silicon) |
-| `bakon_<ver>_windows-amd64.exe` | Windows x86-64 |
-| `bakon_<ver>_windows-arm64.exe` | Windows arm64 |
+| `bakon_<ver>_linux-amd64.tar.gz` | Linux x86-64 |
+| `bakon_<ver>_linux-arm64.tar.gz` | Linux arm64 / **Android Termux (aarch64)** |
+| `bakon_<ver>_linux-armv7.tar.gz` | Linux armv7 / Android Termux (32 位) |
+| `bakon_<ver>_darwin-amd64.tar.gz` | macOS (Intel) |
+| `bakon_<ver>_darwin-arm64.tar.gz` | macOS (Apple Silicon) |
+| `bakon_<ver>_windows-amd64.zip` | Windows x86-64 |
+| `bakon_<ver>_windows-arm64.zip` | Windows arm64 |
 
 ```sh
 # Linux / macOS（BAKON_VER 换成最新 tag）：
 BAKON_VER=v0.1.0
-curl -fLo /usr/local/bin/bakon \
-  "https://github.com/RobiNexy/Bakon/releases/download/${BAKON_VER}/bakon_${BAKON_VER}_linux-amd64"
-chmod +x /usr/local/bin/bakon
+curl -fLo /tmp/bakon.tar.gz \
+  "https://github.com/RobiNexy/Bakon/releases/download/${BAKON_VER}/bakon_${BAKON_VER}_linux-amd64.tar.gz"
+tar -xzf /tmp/bakon.tar.gz -C /tmp
+mv "/tmp/bakon_${BAKON_VER}_linux-amd64/bakon" /usr/local/bin/
 
 # Windows (PowerShell)：
 Invoke-WebRequest `
-  "https://github.com/RobiNexy/Bakon/releases/download/v0.1.0/bakon_v0.1.0_windows-amd64.exe" `
-  -OutFile bakon.exe
+  "https://github.com/RobiNexy/Bakon/releases/download/v0.1.0/bakon_v0.1.0_windows-amd64.zip" `
+  -OutFile bakon.zip
+Expand-Archive bakon.zip
 ```
 
 **方式二：go install**
@@ -56,8 +58,8 @@ go install github.com/RobiNexy/Bakon@latest
 **方式三：源码构建**
 
 ```sh
-git clone https://github.com/RobiNexy/Bakon && cd bakon
-scripts/build.sh          # 全平台二进制在 dist/
+git clone https://github.com/RobiNexy/Bakon && cd Bakon
+scripts/build.sh          # 全平台压缩包在 dist/
 go build .                # 或仅构建本机
 ```
 
@@ -66,9 +68,10 @@ go build .                # 或仅构建本机
 ```sh
 pkg install git
 BAKON_VER=v0.1.0   # 换成最新 tag
-curl -fLo $PREFIX/bin/bakon \
-  "https://github.com/RobiNexy/Bakon/releases/download/${BAKON_VER}/bakon_${BAKON_VER}_linux-arm64"
-chmod +x $PREFIX/bin/bakon
+curl -fLo /tmp/bakon.tar.gz \
+  "https://github.com/RobiNexy/Bakon/releases/download/${BAKON_VER}/bakon_${BAKON_VER}_linux-arm64.tar.gz"
+tar -xzf /tmp/bakon.tar.gz -C /tmp
+mv "/tmp/bakon_${BAKON_VER}_linux-arm64/bakon" $PREFIX/bin/
 ```
 
 > 运行依赖：`git`（Bakon 调用系统 git 作为存储引擎）与 shell（编辑器与钩子经 shell 启动：unix 用 `sh`，Windows 用 `cmd /C`——钩子脚本需自行保证目标平台可执行）。
@@ -112,11 +115,13 @@ bakon hook set /etc/nginx/nginx.conf "systemctl reload nginx"
 | `bakon mv <old> <new>` | 更新路径映射，保留历史 |
 | `bakon prune [<file>]` | 按上限裁剪历史；缺省所有文件 |
 | `bakon hook set/unset/show` | 管理 per-file 变更钩子 |
+| `bakon config show` | 查看生效配置与文件位置 |
+| `bakon config init` | 生成带注释的默认配置文件（不覆盖已有配置） |
 | `bakon version` | 打印版本信息 |
 
 ## 配置
 
-全局配置 `~/.bakon/config.toml`（不存在时使用默认值）：
+配置文件位于 `~/.bakon/config.toml`（可用 `bakon config show` 查看实际路径与生效值；`--config` 全局 flag 可指定其他位置）。**文件不存在时一切命令仍可用默认值工作**，无需预先初始化；想要一份带注释的可改配置，运行 `bakon config init`（已存在则不覆盖）。
 
 ```toml
 editor = "vim"              # 编辑器，优先级：配置 > $EDITOR > vi

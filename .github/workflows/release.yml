@@ -23,6 +23,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/bakon_*
+            dist/*.tar.gz
+            dist/*.zip
             dist/checksums.txt
           generate_release_notes: true
