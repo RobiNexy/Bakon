@@ -1,0 +1,4 @@
+/dist/
+/bakon
+*.test
+*.out
