@@ -147,7 +147,7 @@ samphi ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx
 
 > sudo 在无 TTY 环境的确切行为随版本与 sudoers 配置而异 [基于模式推断]，以 `sudo -l -n` 在目标环境实测为准。
 
-## 语义要点
+## 要点
 
 - **ver 序号不回收**：裁剪后 `log` 从最旧保留版本开始显示，已分配序号不复用。
 - **revert 产生新版本**：回退是追加一次提交，历史永不改写；若目标内容与当前版本相同则不产生新版本。
@@ -156,20 +156,6 @@ samphi ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx
 - **并发模型**：写操作（edit/revert/prune/mv/hook set）由仓库文件锁串行化；只读命令（ls/log/diff/show）**不取锁**——index 原子写入 + git 对象不可变保证无半截状态，代价是读到的快照可能落后一次提交，不会被挂起的编辑会话阻塞。
 - **钩子在产生新版本时触发**（edit 或 revert 提交后），在文件锁内执行，失败不影响已完成的版本提交，进程以退出码 2 提示。
 - **退出码**：`0` 成功；`1` 操作失败；`2` 版本已保存但钩子失败。
-
-## 开发
-
-```sh
-go test -race ./...        # 测试（含真实 git 仓库的集成测试）
-go vet ./...
-scripts/build.sh           # 全平台交叉编译
-```
-
-发布流程：推送 tag 即由 GitHub Actions 构建并发布：
-
-```sh
-git tag v0.1.0 && git push origin v0.1.0
-```
 
 设计文档见 [docs/design.md](docs/design.md)。
 
