@@ -2,6 +2,8 @@
 
 > 编辑关键文件时，无感地保留版本历史。
 
+[English](README.en.md) | 中文
+
 [![CI](https://github.com/RobiNexy/Bakon/actions/workflows/ci.yml/badge.svg)](https://github.com/RobiNexy/Bakon/actions/workflows/ci.yml)
 
 Bakon 是一个单机命令行工具：用你熟悉的编辑器修改 `nginx.conf`、`hosts`、crontab 这类关键文件时，Bakon 在背后把每次变更存入一个 git 仓库，支持查看差异、导出历史版本、一键回退，并可在文件变更后自动执行钩子（如 `systemctl reload nginx`）。
@@ -22,7 +24,7 @@ Bakon 是一个单机命令行工具：用你熟悉的编辑器修改 `nginx.con
 
 **方式一：下载预编译压缩包**（推荐）
 
-从 [Releases](../../releases) 下载对应平台的压缩包。包内二进制恒名 `bakon`，`tar` 解压保留可执行位，**无需手动 chmod**。sha256 见 `checksums.txt`。
+从 [Releases](../../releases) 下载对应平台的压缩包。sha256 见 `checksums.txt`。
 
 | 压缩包 | 平台 |
 |---|---|
