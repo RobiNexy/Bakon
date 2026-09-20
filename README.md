@@ -108,14 +108,14 @@ bakon hook set /etc/nginx/nginx.conf "systemctl reload nginx"
 
 | 命令 | 作用 |
 |---|---|
-| `bakon edit <file>` | 打开编辑器；无改动静默退出，有改动提交新版本 |
+| `bakon edit <file>` | 打开编辑器；无改动静默退出，有改动提交新版本；首次编辑自动记录基线版本 0 |
 | `bakon log <file>` | 列出历史版本（序号、时间、大小） |
 | `bakon diff <file> [v1] [v2]` | 比较版本差异；缺省最近两版；单参数比较前一版 |
 | `bakon show <file> <v>` | 输出某版本完整内容 |
-| `bakon revert <file> <v>` | 恢复到某版本，提交为新版本 |
+| `bakon revert <file> <v>` | 恢复到某版本，提交为新版本（版本 0 = 纳管时的原始状态） |
 | `bakon ls` | 列出所有被管理的文件 |
 | `bakon mv <old> <new>` | 更新路径映射，保留历史 |
-| `bakon prune [<file>]` | 按上限裁剪历史；缺省所有文件 |
+| `bakon prune [<file>]` | 手动裁剪历史；缺省所有文件。编辑提交超限时也会自动裁剪（见下） |
 | `bakon hook set/unset/show` | 管理 per-file 变更钩子 |
 | `bakon config show` | 查看生效配置与文件位置 |
 | `bakon config init` | 生成带注释的默认配置文件（不覆盖已有配置） |
@@ -156,6 +156,8 @@ samphi ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx
 
 ## 要点
 
+- **首次编辑纳管基线版本 0**：第一次 `bakon edit` 某文件时，先自动提交纳管时刻的内容为版本 0，再进编辑器；后续变更从版本 1 起。`bakon revert <file> 0` 即恢复到纳管前的原始状态。基线提交不触发钩子（钩子语义是"内容变更"，基线未改变内容）。
+- **prune 双通道**：编辑/revert 提交后，版本数超过生效上限的文件**自动**裁剪最旧版本；`bakon prune [<file>]` 是**手动**触发（全量或单文件），幂等——未超限时输出 "nothing to prune"。
 - **ver 序号不回收**：裁剪后 `log` 从最旧保留版本开始显示，已分配序号不复用。
 - **revert 产生新版本**：回退是追加一次提交，历史永不改写；若目标内容与当前版本相同则不产生新版本。
 - **被裁剪的版本不可恢复**：`show`/`revert` 一个已裁剪的序号会明确报 `has been pruned`（区别于从未存在的 `no version N`）。

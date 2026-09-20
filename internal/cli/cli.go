@@ -32,7 +32,8 @@ func newApp() (*bakon.App, error) {
 
 func atoiVer(s string) (int, error) {
 	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 {
+	// 0 为纳管基线版本，合法。
+	if err != nil || n < 0 {
 		return 0, fmt.Errorf("invalid version number %q", s)
 	}
 	return n, nil
@@ -130,12 +131,18 @@ func editCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ver, err := app.Edit(args[0])
+			res, err := app.Edit(args[0])
 			if err != nil {
 				return err
 			}
-			if ver > 0 {
-				fmt.Printf("bakon: saved version %d of %s\n", ver, args[0])
+			switch {
+			case res.Adopted && res.Change > 0:
+				fmt.Printf("bakon: tracked %s (baseline version 0), saved version %d\n",
+					args[0], res.Change)
+			case res.Adopted:
+				fmt.Printf("bakon: tracked %s (baseline version 0 saved); no changes\n", args[0])
+			case res.Change > 0:
+				fmt.Printf("bakon: saved version %d of %s\n", res.Change, args[0])
 			}
 			return nil
 		},

@@ -108,14 +108,14 @@ bakon hook set /etc/nginx/nginx.conf "systemctl reload nginx"
 
 | Command | Purpose |
 |---|---|
-| `bakon edit <file>` | Open the editor; silent exit if unchanged, new version if changed |
+| `bakon edit <file>` | Open the editor; silent exit if unchanged, new version if changed; the first edit records baseline version 0 automatically |
 | `bakon log <file>` | List historical versions (number, time, size) |
 | `bakon diff <file> [v1] [v2]` | Compare versions; defaults to the two most recent; one argument compares the previous version |
 | `bakon show <file> <v>` | Print the full content of a version |
-| `bakon revert <file> <v>` | Restore to a version, committed as a new version |
+| `bakon revert <file> <v>` | Restore to a version, committed as a new version (version 0 = the original state at adoption time) |
 | `bakon ls` | List all managed files |
 | `bakon mv <old> <new>` | Update the path mapping, keeping history |
-| `bakon prune [<file>]` | Trim history to the retention limit; defaults to all files |
+| `bakon prune [<file>]` | Trim history manually; defaults to all files. Pruning also happens automatically when a commit exceeds the limit (see below) |
 | `bakon hook set/unset/show` | Manage per-file change hooks |
 | `bakon config show` | Show effective configuration and file locations |
 | `bakon config init` | Write the commented default config file (never overwrites) |
@@ -156,6 +156,8 @@ Alternatives: polkit (`pkexec`), or a systemd path unit watching the file instea
 
 ## Key points
 
+- **The first edit records baseline version 0**: the first `bakon edit` of a file commits the content at adoption time as version 0 before launching the editor; later changes start at version 1. `bakon revert <file> 0` restores the original pre-adoption state. The baseline commit does not fire hooks (a hook means "content changed"; the baseline changes nothing).
+- **Prune has two triggers**: after an edit/revert commit, a file whose version count exceeds the effective limit is **automatically** pruned from the oldest; `bakon prune [<file>]` triggers it **manually** (all files or one), idempotent — it prints "nothing to prune" when within limits.
 - **ver numbers are never recycled**: after pruning, `log` starts from the oldest retained version; assigned numbers are never reused.
 - **revert creates a new version**: rollback is an appended commit, history is never rewritten; if the target content matches the current version, no new version is created.
 - **Pruned versions are unrecoverable**: `show`/`revert` of a pruned number reports `has been pruned` (distinct from a never-existing `no version N`).

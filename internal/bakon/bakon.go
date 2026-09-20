@@ -146,14 +146,14 @@ func (a *App) versions(rel string) ([]Version, error) {
 	return vs, nil
 }
 
-// ParseVer 解析提交主题 "bakon ver <N>"。
+// ParseVer 解析提交主题 "bakon ver <N>"；0 为纳管基线版本，合法。
 func ParseVer(subject string) (int, bool) {
 	const prefix = "bakon ver "
 	if !strings.HasPrefix(subject, prefix) {
 		return 0, false
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(subject[len(prefix):]))
-	if err != nil || n < 1 {
+	if err != nil || n < 0 {
 		return 0, false
 	}
 	return n, true
@@ -191,7 +191,8 @@ func (a *App) commitVersion(abs string, entry *index.Entry, content []byte) (int
 		return 0, err
 	}
 	// 取最大值+1 而非计数：prune 不回收序号，且能容忍历史中混入外部提交。
-	next := 1
+	// 空历史时 next=0——即首次纳管的基线版本。
+	next := 0
 	for _, v := range vs {
 		if v.Ver >= next {
 			next = v.Ver + 1
@@ -206,84 +207,100 @@ func (a *App) commitVersion(abs string, entry *index.Entry, content []byte) (int
 
 // ---- edit ----
 
+// EditResult 是一次 edit 的结果。
+type EditResult struct {
+	// Adopted 表示本次运行完成了首次纳管：提交了基线版本 0（纳管时刻的内容快照）。
+	// 基线提交不触发钩子——钩子语义是"内容变更"，基线未改变任何内容。
+	Adopted bool
+	// Change 是本次编辑产生的新版本号；0 表示无改动（含已纳管文件的空编辑）。
+	Change int
+}
+
 // Edit 打开编辑器；内容有变化则提交新版本并按需裁剪、执行钩子。
-// 返回新版本号；0 表示无改动（静默退出）。
-// 与设计文档的步骤差异：旧内容 hash 在取锁之后计算，
-// 消除"等锁期间文件被上一操作改变 → 幽灵提交"的竞态。
-func (a *App) Edit(path string) (int, error) {
+// 首次编辑某个文件时，先提交基线版本 0（进入编辑前的内容快照）再启动编辑器，
+// 保证纳管前的原始状态可回退（bakon revert <file> 0）。
+// 返回 Change==0 表示无改动；与设计文档的步骤差异：
+// 旧内容 hash 在取锁之后计算，消除"等锁期间文件被上一操作改变 → 幽灵提交"的竞态。
+func (a *App) Edit(path string) (EditResult, error) {
 	if err := a.Repo.Init(); err != nil {
-		return 0, err
+		return EditResult{}, err
 	}
 	release, err := a.lock()
 	if err != nil {
-		return 0, err
+		return EditResult{}, err
 	}
 	defer release()
 
 	abs, err := cleanAbs(path)
 	if err != nil {
-		return 0, err
+		return EditResult{}, err
 	}
 	fi, err := os.Stat(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			if a.isManaged(abs) {
 				// 已跟踪文件被删：指向 revert 恢复路径（revert 不要求文件存在）。
-				return 0, fmt.Errorf("tracked file was deleted: %s (restore with: bakon revert %s <ver>)", abs, abs)
+				return EditResult{}, fmt.Errorf("tracked file was deleted: %s (restore with: bakon revert %s <ver>)", abs, abs)
 			}
 			// 不存在的未跟踪文件：报错而非创建——自动创建会让
 			// 路径打错字时凭空纳管一个空文件。
-			return 0, fmt.Errorf("no such file: %s (bakon edit only tracks existing files; create it first)", abs)
+			return EditResult{}, fmt.Errorf("no such file: %s (bakon edit only tracks existing files; create it first)", abs)
 		}
-		return 0, fmt.Errorf("cannot edit %s: %w", abs, err)
+		return EditResult{}, fmt.Errorf("cannot edit %s: %w", abs, err)
 	}
 	if fi.IsDir() {
-		return 0, fmt.Errorf("%s is a directory", abs)
+		return EditResult{}, fmt.Errorf("%s is a directory", abs)
 	}
 
 	old, err := os.ReadFile(abs)
 	if err != nil {
-		return 0, err
-	}
-
-	if err := a.runEditor(abs); err != nil {
-		return 0, fmt.Errorf("editor: %w", err)
-	}
-
-	cur, err := os.ReadFile(abs)
-	if err != nil {
-		return 0, err
-	}
-	if bytes.Equal(old, cur) {
-		return 0, nil
+		return EditResult{}, err
 	}
 
 	idx, err := index.Load(a.IndexPath)
 	if err != nil {
-		return 0, err
+		return EditResult{}, err
 	}
 	entry := idx.Get(abs)
+	adopted := false
 	if entry == nil {
 		entry = &index.Entry{ID: IDFor(abs)}
 		idx.Set(abs, entry)
 		if err := idx.Save(a.IndexPath); err != nil {
-			return 0, err
+			return EditResult{}, err
 		}
+		// 基线版本 0：先于编辑器提交当前内容，编辑器的改动成为 ver 1。
+		if _, err := a.commitVersion(abs, entry, old); err != nil {
+			return EditResult{}, err
+		}
+		adopted = true
+	}
+
+	if err := a.runEditor(abs); err != nil {
+		return EditResult{}, fmt.Errorf("editor: %w", err)
+	}
+
+	cur, err := os.ReadFile(abs)
+	if err != nil {
+		return EditResult{}, err
+	}
+	if bytes.Equal(old, cur) {
+		return EditResult{Adopted: adopted}, nil
 	}
 
 	ver, err := a.commitVersion(abs, entry, cur)
 	if err != nil {
-		return 0, err
+		return EditResult{}, err
 	}
 	if _, err := a.prunePaths(idx, []string{abs}); err != nil {
-		return ver, fmt.Errorf("version %d saved, but prune failed: %w", ver, err)
+		return EditResult{Change: ver}, fmt.Errorf("version %d saved, but prune failed: %w", ver, err)
 	}
 	if entry.Hook != "" {
 		if err := a.runHook(entry.Hook); err != nil {
-			return ver, fmt.Errorf("%w: %v", ErrHookFailed, err)
+			return EditResult{Change: ver}, fmt.Errorf("%w: %v", ErrHookFailed, err)
 		}
 	}
-	return ver, nil
+	return EditResult{Adopted: adopted, Change: ver}, nil
 }
 
 func (a *App) runEditor(abs string) error {
@@ -495,7 +512,7 @@ func (a *App) Diff(path string, verArgs []string) ([]byte, error) {
 	}
 	pick := func(s string) (Version, error) {
 		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 {
+		if err != nil || n < 0 {
 			return Version{}, fmt.Errorf("invalid version number %q", s)
 		}
 		v, err := resolveVer(vs, n)

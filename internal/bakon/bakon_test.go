@@ -49,13 +49,14 @@ func noopEditor(t *testing.T, tmp string) string {
 	return "true"
 }
 
+// mustEdit 执行 edit 并返回本次编辑产生的版本号（Change）。
 func mustEdit(t *testing.T, app *App, file string) int {
 	t.Helper()
-	ver, err := app.Edit(file)
+	res, err := app.Edit(file)
 	if err != nil {
 		t.Fatalf("edit %s: %v", file, err)
 	}
-	return ver
+	return res.Change
 }
 
 func mustSetContent(t *testing.T, path, content string) {
@@ -90,17 +91,78 @@ func TestEditCreatesVersionsAndLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(infos) != 2 {
+	// 基线 0 = "one\n"，之后 1、2 为两次编辑。
+	if len(infos) != 3 {
 		t.Fatalf("log len = %d", len(infos))
 	}
-	if infos[0].Ver != 2 || infos[1].Ver != 1 {
-		t.Errorf("log order = %d,%d", infos[0].Ver, infos[1].Ver)
+	if infos[0].Ver != 2 || infos[1].Ver != 1 || infos[2].Ver != 0 {
+		t.Errorf("log order = %d,%d,%d", infos[0].Ver, infos[1].Ver, infos[2].Ver)
 	}
-	if infos[0].Size != 14 || infos[1].Size != 8 {
-		t.Errorf("sizes = %d,%d", infos[0].Size, infos[1].Size)
+	if infos[0].Size != 14 || infos[1].Size != 8 || infos[2].Size != 4 {
+		t.Errorf("sizes = %d,%d,%d", infos[0].Size, infos[1].Size, infos[2].Size)
 	}
 	if infos[0].Time.IsZero() {
 		t.Error("time is zero")
+	}
+}
+
+func TestFirstEditCreatesBaselineVersion0(t *testing.T) {
+	app, tmp := newTestApp(t, 100)
+	file := filepath.Join(tmp, "f.txt")
+	mustSetContent(t, file, "original\n")
+	app.Editor = overwriteEditor(t, tmp, "edited\n")
+	res, err := app.Edit(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Adopted || res.Change != 1 {
+		t.Fatalf("res = %+v, want adopted + change 1", res)
+	}
+	// ver 0 = 纳管前内容，可读取、可回退。
+	got, err := app.Show(file, 0)
+	if err != nil || string(got) != "original\n" {
+		t.Fatalf("show 0 = %q, %v", got, err)
+	}
+	if _, err := app.Revert(file, 0); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(file)
+	if string(content) != "original\n" {
+		t.Errorf("revert 0 content = %q", content)
+	}
+	// 第二次编辑（无改动）：不再重复纳管。
+	app.Editor = noopEditor(t, tmp)
+	res, err = app.Edit(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Adopted || res.Change != 0 {
+		t.Errorf("res = %+v, want no adoption and no change", res)
+	}
+}
+
+func TestAdoptionWithoutChangeRecordsBaselineOnly(t *testing.T) {
+	app, tmp := newTestApp(t, 100)
+	file := filepath.Join(tmp, "f.txt")
+	mustSetContent(t, file, "asis\n")
+	app.Editor = noopEditor(t, tmp)
+	res, err := app.Edit(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Adopted || res.Change != 0 {
+		t.Fatalf("res = %+v, want adopted without change", res)
+	}
+	infos, err := app.Log(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].Ver != 0 {
+		t.Errorf("log = %+v, want only baseline", infos)
+	}
+	got, _ := app.Show(file, 0)
+	if string(got) != "asis\n" {
+		t.Errorf("baseline content = %q", got)
 	}
 }
 
@@ -113,16 +175,17 @@ func TestEditNoChangeIsSilent(t *testing.T) {
 		t.Fatalf("ver = %d", ver)
 	}
 	app.Editor = noopEditor(t, tmp)
-	ver, err := app.Edit(file)
+	res, err := app.Edit(file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ver != 0 {
-		t.Errorf("no-change ver = %d, want 0", ver)
+	if res.Adopted || res.Change != 0 {
+		t.Errorf("res = %+v, want plain no-change", res)
 	}
 	infos, _ := app.Log(file)
-	if len(infos) != 1 {
-		t.Errorf("log len = %d, want 1", len(infos))
+	// 基线 0 + 一次变更 = 2 版。
+	if len(infos) != 2 {
+		t.Errorf("log len = %d, want 2", len(infos))
 	}
 }
 
@@ -181,7 +244,7 @@ func TestShow(t *testing.T) {
 		app.Editor = overwriteEditor(t, tmp, c)
 		mustEdit(t, app, file)
 	}
-	for ver, want := range map[int]string{1: "alpha\n", 2: "beta\n", 3: "gamma\n"} {
+	for ver, want := range map[int]string{0: "start\n", 1: "alpha\n", 2: "beta\n", 3: "gamma\n"} {
 		got, err := app.Show(file, ver)
 		if err != nil {
 			t.Fatalf("show %d: %v", ver, err)
@@ -227,9 +290,9 @@ func TestDiff(t *testing.T) {
 	if !strings.Contains(string(out), "+gamma") {
 		t.Errorf("v1..v3 diff = %q", out)
 	}
-	// 第一版没有前驱
-	if _, err := app.Diff(file, []string{"1"}); err == nil {
-		t.Error("expected error diffing version 1 alone")
+	// 基线 0 没有前驱
+	if _, err := app.Diff(file, []string{"0"}); err == nil {
+		t.Error("expected error diffing baseline alone")
 	}
 	// 少于两版
 	solo := filepath.Join(tmp, "solo.txt")
@@ -265,7 +328,8 @@ func TestRevert(t *testing.T) {
 		t.Errorf("show v4 = %q (%v)", v4, err)
 	}
 	infos, _ := app.Log(file)
-	if len(infos) != 4 || infos[0].Ver != 4 {
+	// 0=seed, 1..3 三次编辑, 4=revert → 5 版
+	if len(infos) != 5 || infos[0].Ver != 4 {
 		t.Errorf("log after revert = %+v", infos)
 	}
 }
@@ -368,7 +432,7 @@ func TestManualPruneAllFiles(t *testing.T) {
 		app.Editor = overwriteEditor(t, tmp, c)
 		mustEdit(t, app, file)
 	}
-	// 文件级覆盖：max_versions = 2
+	// 文件级覆盖：max_versions = 2（已有 5 版：0..4，裁掉最旧 3 版）
 	idx, err := indexLoad(app)
 	if err != nil {
 		t.Fatal(err)
@@ -382,8 +446,8 @@ func TestManualPruneAllFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("pruned = %d, want 2", n)
+	if n != 3 {
+		t.Fatalf("pruned = %d, want 3", n)
 	}
 	infos, _ := app.Log(file)
 	if len(infos) != 2 || infos[0].Ver != 4 {
@@ -408,7 +472,8 @@ func TestPruneUnlimitedIsNoop(t *testing.T) {
 		t.Errorf("prune = %d, %v; want noop", n, err)
 	}
 	infos, _ := app.Log(file)
-	if len(infos) != 3 {
+	// 0=seed + 3 次编辑 = 4 版
+	if len(infos) != 4 {
 		t.Errorf("log = %+v", infos)
 	}
 }
@@ -437,16 +502,18 @@ func TestPruneSingleFile(t *testing.T) {
 	if err := idx.Save(app.IndexPath); err != nil {
 		t.Fatal(err)
 	}
+	// b 有 4 版（0..3），裁掉最旧 2 版
 	n, err := app.Prune(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("pruned = %d, want 1", n)
+	if n != 2 {
+		t.Fatalf("pruned = %d, want 2", n)
 	}
 	ia, _ := app.Log(a)
 	ib, _ := app.Log(b)
-	if len(ia) != 2 {
+	// a 未裁剪：0..2 共 3 版
+	if len(ia) != 3 {
 		t.Errorf("a log = %+v", ia)
 	}
 	if len(ib) != 2 || ib[0].Ver != 3 {
@@ -503,7 +570,8 @@ func TestMV(t *testing.T) {
 		t.Errorf("ver after mv = %d, want 2", ver)
 	}
 	infos, _ := app.Log(newPath)
-	if len(infos) != 2 || infos[1].Ver != 1 {
+	// 0=h0(基线), 1=h1, 2=h2 → 历史随 mv 延续
+	if len(infos) != 3 || infos[2].Ver != 0 {
 		t.Errorf("log after mv = %+v", infos)
 	}
 }
@@ -592,18 +660,19 @@ func TestHookFailureKeepsVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.Editor = overwriteEditor(t, tmp, "v2\n")
-	ver, err := app.Edit(file)
+	res, err := app.Edit(file)
 	if err == nil {
 		t.Fatal("expected hook failure")
 	}
 	if !errors.Is(err, ErrHookFailed) {
 		t.Fatalf("err = %v, want ErrHookFailed", err)
 	}
-	if ver != 2 {
-		t.Fatalf("ver = %d, want 2", ver)
+	if res.Change != 2 {
+		t.Fatalf("change = %d, want 2", res.Change)
 	}
 	infos, _ := app.Log(file)
-	if len(infos) != 2 {
+	// 0=seed, 1=v1, 2=v2（钩子失败不回滚）→ 3 版
+	if len(infos) != 3 {
 		t.Errorf("version not saved: %+v", infos)
 	}
 }
@@ -643,8 +712,8 @@ func TestParseVer(t *testing.T) {
 		n    int
 		ok   bool
 	}{
-		{"bakon ver 3", 3, true}, {"bakon ver 12", 12, true}, {"bakon ver 0", 0, false},
-		{"bakon ver x", 0, false}, {"Merge branch", 0, false}, {"bakon ver", 0, false},
+		{"bakon ver 3", 3, true}, {"bakon ver 12", 12, true}, {"bakon ver 0", 0, true},
+		{"bakon ver x", 0, false}, {"bakon ver -1", 0, false}, {"Merge branch", 0, false}, {"bakon ver", 0, false},
 	}
 	for _, want := range cases {
 		n, ok := ParseVer(want.subj)
@@ -715,8 +784,9 @@ func TestConcurrentEdits(t *testing.T) {
 		}
 	}
 	infos, _ := app.Log(file)
-	if len(infos) != 3 || infos[0].Ver != 3 || infos[2].Ver != 1 {
-		t.Errorf("log = %+v, want 3 versions", infos)
+	// 0=base + v1 + 并发的两次变更 = 4 版
+	if len(infos) != 4 || infos[0].Ver != 3 || infos[3].Ver != 0 {
+		t.Errorf("log = %+v, want 4 versions", infos)
 	}
 }
 
