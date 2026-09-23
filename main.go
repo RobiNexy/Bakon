@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -12,6 +13,9 @@ func main() {
 	err := cli.Execute()
 	if err == nil {
 		return
+	}
+	if errors.Is(err, cli.ErrDiffFound) {
+		os.Exit(cli.ExitCode(err))
 	}
 	// 唯一的错误输出点：cmd 层已静默，这里统一打印并分类退出码。
 	// 钩子失败时版本已保存，exit 2 提示调用方处理钩子事务。

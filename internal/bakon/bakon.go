@@ -28,17 +28,30 @@ import (
 // 版本操作不受影响；进程以非零码退出以提醒用户处理钩子事务。
 var ErrHookFailed = errors.New("version saved, but hook failed")
 
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
+	ErrCorrupt  = errors.New("store corrupt")
+	ErrUsage    = errors.New("usage")
+)
+
 type App struct {
 	ConfigPath string
 	Repo       *gitx.Repo
 	IndexPath  string
 	Editor     string
 	GlobalMax  int
+	Format     string
+	Color      string
+	NoHook     bool
 }
 
 func NewApp(cfgPath string) (*App, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	store := config.ExpandHome(cfg.Store)
@@ -52,6 +65,8 @@ func NewApp(cfgPath string) (*App, error) {
 		IndexPath:  filepath.Join(store, "index.json"),
 		Editor:     cfg.EffectiveEditor(),
 		GlobalMax:  cfg.Retention.MaxVersions,
+		Format:     cfg.Output.Format,
+		Color:      cfg.Output.Color,
 	}, nil
 }
 
@@ -66,16 +81,18 @@ func (a *App) isManaged(abs string) bool {
 
 // Version 是单个历史版本的解析结果。
 type Version struct {
-	Ver  int
-	Hash string
-	Time time.Time
+	Ver    int
+	Hash   string
+	Time   time.Time
+	Source string
 }
 
 // VersionInfo 是 log 输出所需的展示数据。
 type VersionInfo struct {
-	Ver  int
-	Time time.Time
-	Size int64
+	Ver    int
+	Time   time.Time
+	Size   int64
+	Source string
 }
 
 // ---- 身份与路径 ----
@@ -141,7 +158,11 @@ func (a *App) versions(rel string) ([]Version, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse commit time of %s: %w", c.Hash, err)
 		}
-		vs = append(vs, Version{Ver: n, Hash: c.Hash, Time: t})
+		source := "edit"
+		if fields := strings.Fields(c.Subject); len(fields) >= 4 && strings.HasPrefix(fields[3], "source=") {
+			source = strings.TrimPrefix(fields[3], "source=")
+		}
+		vs = append(vs, Version{Ver: n, Hash: c.Hash, Time: t, Source: source})
 	}
 	return vs, nil
 }
@@ -152,7 +173,11 @@ func ParseVer(subject string) (int, bool) {
 	if !strings.HasPrefix(subject, prefix) {
 		return 0, false
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(subject[len(prefix):]))
+	rest := strings.TrimSpace(subject[len(prefix):])
+	if i := strings.IndexByte(rest, ' '); i >= 0 {
+		rest = rest[:i]
+	}
+	n, err := strconv.Atoi(rest)
 	if err != nil || n < 0 {
 		return 0, false
 	}
@@ -185,6 +210,10 @@ func resolveVer(vs []Version, ver int) (Version, error) {
 // ---- 提交 ----
 
 func (a *App) commitVersion(abs string, entry *index.Entry, content []byte) (int, error) {
+	return a.commitVersionFrom(abs, entry, content, "edit")
+}
+
+func (a *App) commitVersionFrom(abs string, entry *index.Entry, content []byte, source string) (int, error) {
 	rel := a.relPath(entry.ID)
 	vs, err := a.versions(rel)
 	if err != nil {
@@ -198,7 +227,7 @@ func (a *App) commitVersion(abs string, entry *index.Entry, content []byte) (int
 			next = v.Ver + 1
 		}
 	}
-	msg := fmt.Sprintf("bakon ver %d\n\npath: %s\n", next, abs)
+	msg := fmt.Sprintf("bakon ver %d source=%s\n\npath: %s\n", next, source, abs)
 	if err := a.Repo.CommitVersion(rel, content, msg); err != nil {
 		return 0, err
 	}
@@ -288,6 +317,10 @@ func (a *App) Edit(path string) (EditResult, error) {
 		return EditResult{Adopted: adopted}, nil
 	}
 
+	prior, err := a.versions(a.relPath(entry.ID))
+	if err != nil {
+		return EditResult{}, err
+	}
 	ver, err := a.commitVersion(abs, entry, cur)
 	if err != nil {
 		return EditResult{}, err
@@ -295,8 +328,8 @@ func (a *App) Edit(path string) (EditResult, error) {
 	if _, err := a.prunePaths(idx, []string{abs}); err != nil {
 		return EditResult{Change: ver}, fmt.Errorf("version %d saved, but prune failed: %w", ver, err)
 	}
-	if entry.Hook != "" {
-		if err := a.runHook(entry.Hook); err != nil {
+	if entry.Hook != "" && !a.NoHook {
+		if err := a.runHook(entry.Hook, abs, ver, "edit", previousVersion(prior)); err != nil {
 			return EditResult{Change: ver}, fmt.Errorf("%w: %v", ErrHookFailed, err)
 		}
 	}
@@ -391,15 +424,15 @@ func (a *App) Revert(path string, ver int) (int, error) {
 	if err := writeBack(abs, content); err != nil {
 		return 0, err
 	}
-	newVer, err := a.commitVersion(abs, entry, content)
+	newVer, err := a.commitVersionFrom(abs, entry, content, "revert")
 	if err != nil {
 		return 0, err
 	}
 	if _, err := a.prunePaths(idx, []string{abs}); err != nil {
 		return newVer, fmt.Errorf("version %d saved, but prune failed: %w", newVer, err)
 	}
-	if entry.Hook != "" {
-		if err := a.runHook(entry.Hook); err != nil {
+	if entry.Hook != "" && !a.NoHook {
+		if err := a.runHook(entry.Hook, abs, newVer, "revert", previousVersion(vs)); err != nil {
 			return newVer, fmt.Errorf("%w: %v", ErrHookFailed, err)
 		}
 	}
@@ -424,6 +457,10 @@ func writeBack(abs string, content []byte) error {
 		}
 	}()
 	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -459,7 +496,7 @@ func (a *App) Log(path string) ([]VersionInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, VersionInfo{Ver: vs[i].Ver, Time: vs[i].Time, Size: size})
+		out = append(out, VersionInfo{Ver: vs[i].Ver, Time: vs[i].Time, Size: size, Source: vs[i].Source})
 	}
 	return out, nil
 }
@@ -566,6 +603,57 @@ func (a *App) Ls() ([]string, error) {
 		return nil, err
 	}
 	return idx.Paths(), nil
+}
+
+// PathInfo is the stable plumbing representation of a managed path.
+type PathInfo struct {
+	Path string `json:"path"`
+	ID   string `json:"id"`
+	Repo string `json:"repo"`
+}
+
+// Path resolves a user path without exposing git object IDs.
+func (a *App) Path(path string) (PathInfo, error) {
+	abs, err := cleanAbs(path)
+	if err != nil {
+		return PathInfo{}, err
+	}
+	idx, err := index.Load(a.IndexPath)
+	if err != nil {
+		return PathInfo{}, err
+	}
+	e := idx.Get(abs)
+	if e == nil {
+		return PathInfo{}, notManaged(abs)
+	}
+	return PathInfo{Path: abs, ID: e.ID, Repo: a.relPath(e.ID)}, nil
+}
+
+// Dump is the binary-safe plumbing alias for Show.
+func (a *App) Dump(path string, ver int) ([]byte, error) { return a.Show(path, ver) }
+
+// Verify checks index entries and every retained version's blob.
+// It does not rewrite data; callers can safely use it in health checks.
+func (a *App) Verify() error {
+	idx, err := index.Load(a.IndexPath)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrCorrupt, err)
+	}
+	for path, entry := range idx.Entries {
+		if entry == nil || entry.ID == "" {
+			return fmt.Errorf("%w: invalid index entry for %s", ErrCorrupt, path)
+		}
+		vs, err := a.versions(a.relPath(entry.ID))
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrCorrupt, err)
+		}
+		for _, v := range vs {
+			if _, err := a.Repo.BlobSize(v.Hash, a.relPath(entry.ID)); err != nil {
+				return fmt.Errorf("%w: %s version %d: %v", ErrCorrupt, path, v.Ver, err)
+			}
+		}
+	}
+	return nil
 }
 
 // Mv 更新路径映射，内部 ID 与 git 历史不变。
@@ -739,10 +827,26 @@ func (a *App) prunePaths(idx *index.Index, paths []string) (int, error) {
 
 // runHook 经系统 shell 执行钩子，输出直通终端。
 // 失败不回滚版本——文件已正确保存/恢复，这是设计文档的显式取舍。
-func (a *App) runHook(hook string) error {
+func previousVersion(vs []Version) string {
+	if len(vs) == 0 {
+		return ""
+	}
+	return strconv.Itoa(vs[len(vs)-1].Ver)
+}
+
+// runHook executes a file hook with a stable, script-friendly environment.
+// Hook failure is reported separately because the version has already committed.
+func (a *App) runHook(hook, file string, ver int, source, previous string) error {
 	cmd := shellCmd(hook)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Stdin = nil
+	cmd.Env = append(os.Environ(),
+		"BAKON_FILE="+file,
+		"BAKON_VERSION="+strconv.Itoa(ver),
+		"BAKON_SOURCE="+source,
+		"BAKON_PREV="+previous,
+	)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("hook exited with error: %w", err)
 	}

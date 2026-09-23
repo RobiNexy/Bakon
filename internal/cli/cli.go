@@ -4,11 +4,15 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/RobiNexy/Bakon/internal/bakon"
 	"github.com/RobiNexy/Bakon/internal/config"
@@ -17,6 +21,12 @@ import (
 )
 
 var configFlag string
+var storeFlag string
+var formatFlag string
+var noColorFlag bool
+var noHookFlag bool
+
+var ErrDiffFound = errors.New("differences found")
 
 // 构建信息由 scripts/build.sh 经 -ldflags -X 注入；
 // 源码直编（go build）时保持 dev 占位。
@@ -27,7 +37,22 @@ var (
 )
 
 func newApp() (*bakon.App, error) {
-	return bakon.NewApp(configFlag)
+	app, err := bakon.NewApp(configFlag)
+	if err != nil {
+		return nil, err
+	}
+	if storeFlag != "" {
+		app.Repo.Dir = config.ExpandHome(storeFlag)
+		app.IndexPath = filepath.Join(app.Repo.Dir, "index.json")
+	}
+	if formatFlag != "" {
+		app.Format = formatFlag
+	}
+	if noColorFlag {
+		app.Color = "never"
+	}
+	app.NoHook = noHookFlag
+	return app, nil
 }
 
 func atoiVer(s string) (int, error) {
@@ -39,6 +64,24 @@ func atoiVer(s string) (int, error) {
 	return n, nil
 }
 
+func outputFormat(app *bakon.App) string {
+	if formatFlag != "" {
+		return formatFlag
+	}
+	if app.Format == "human" && !isTTY(os.Stdout) {
+		return "plain"
+	}
+	if app.Format == "" {
+		return "human"
+	}
+	return app.Format
+}
+
+func isTTY(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
 func Execute() error {
 	root := &cobra.Command{
 		Use:           "bakon",
@@ -47,6 +90,10 @@ func Execute() error {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVar(&configFlag, "config", config.DefaultPath(), "config file path")
+	root.PersistentFlags().StringVar(&storeFlag, "store", "", "repository path")
+	root.PersistentFlags().StringVarP(&formatFlag, "format", "", "", "output format: human, plain, or json")
+	root.PersistentFlags().BoolVar(&noColorFlag, "no-color", false, "disable colored output")
+	root.PersistentFlags().BoolVar(&noHookFlag, "no-hook", false, "skip configured hooks")
 
 	root.AddCommand(
 		editCmd(),
@@ -60,6 +107,9 @@ func Execute() error {
 		hookCmd(),
 		configCmd(),
 		versionCmd(),
+		pathCmd(),
+		verifyCmd(),
+		dumpCmd(),
 	)
 	return root.Execute()
 }
@@ -114,6 +164,9 @@ func versionCmd() *cobra.Command {
 		Short: "Print version information",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if formatFlag == "json" {
+				return json.NewEncoder(os.Stdout).Encode(map[string]string{"version": version, "commit": commit, "built": date, "go": runtime.Version()})
+			}
 			fmt.Printf("bakon %s (commit: %s, built: %s, %s)\n",
 				version, commit, date, runtime.Version())
 			return nil
@@ -163,6 +216,22 @@ func logCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			format := outputFormat(app)
+			if format == "json" {
+				enc := json.NewEncoder(os.Stdout)
+				for _, in := range infos {
+					if err := enc.Encode(map[string]any{"ver": in.Ver, "time": in.Time.UTC().Format(time.RFC3339), "size": in.Size, "source": in.Source}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			if format == "plain" {
+				for _, in := range infos {
+					fmt.Printf("%d\t%s\t%d\t%s\n", in.Ver, in.Time.UTC().Format(time.RFC3339), in.Size, in.Source)
+				}
+				return nil
+			}
 			fmt.Println("#  ver   time                  size")
 			for _, in := range infos {
 				fmt.Printf("  %-6d%s   %s\n",
@@ -190,10 +259,21 @@ func diffCmd() *cobra.Command {
 				return err
 			}
 			_, err = os.Stdout.Write(out)
-			return err
+			if err != nil {
+				return err
+			}
+			if len(out) > 0 {
+				return &diffFoundError{}
+			}
+			return nil
 		},
 	}
 }
+
+type diffFoundError struct{}
+
+func (*diffFoundError) Error() string { return "differences found" }
+func (*diffFoundError) Unwrap() error { return ErrDiffFound }
 
 func showCmd() *cobra.Command {
 	return &cobra.Command{
@@ -369,13 +449,90 @@ func hookCmd() *cobra.Command {
 	return cmd
 }
 
+func pathCmd() *cobra.Command {
+	return &cobra.Command{Use: "path <file>", Short: "Print the stable internal path mapping", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		app, err := newApp()
+		if err != nil {
+			return err
+		}
+		info, err := app.Path(args[0])
+		if err != nil {
+			return err
+		}
+		if formatFlag == "json" {
+			return json.NewEncoder(os.Stdout).Encode(info)
+		}
+		fmt.Printf("%s\t%s\t%s\n", info.Path, info.ID, info.Repo)
+		return nil
+	}}
+}
+
+func verifyCmd() *cobra.Command {
+	return &cobra.Command{Use: "verify", Short: "Check repository consistency", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		app, err := newApp()
+		if err != nil {
+			return err
+		}
+		if err := app.Verify(); err != nil {
+			return err
+		}
+		fmt.Println("ok")
+		return nil
+	}}
+}
+
+func dumpCmd() *cobra.Command {
+	return &cobra.Command{Use: "dump <file> <v>", Short: "Write a version as binary data", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		ver, err := atoiVer(args[1])
+		if err != nil {
+			return err
+		}
+		app, err := newApp()
+		if err != nil {
+			return err
+		}
+		content, err := app.Dump(args[0], ver)
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(content)
+		return err
+	}}
+}
+
 // ExitCode 将错误分类为进程退出码：0 成功、2 钩子失败、1 其他。
 func ExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
 	if errors.Is(err, bakon.ErrHookFailed) {
+		return 5
+	}
+	var diffErr *diffFoundError
+	if errors.As(err, &diffErr) {
+		return 1
+	}
+	if errors.Is(err, bakon.ErrUsage) {
 		return 2
+	}
+	if errors.Is(err, bakon.ErrNotFound) {
+		return 3
+	}
+	if errors.Is(err, bakon.ErrConflict) {
+		return 4
+	}
+	if errors.Is(err, bakon.ErrCorrupt) {
+		return 6
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "unknown command") || strings.Contains(msg, "requires") || strings.Contains(msg, "accepts") || strings.Contains(msg, "invalid version") {
+		return 2
+	}
+	if strings.Contains(msg, "not managed") || strings.Contains(msg, "no such file") || strings.Contains(msg, "no version") || strings.Contains(msg, "has been pruned") {
+		return 3
+	}
+	if strings.Contains(msg, "acquire lock") {
+		return 4
 	}
 	return 1
 }

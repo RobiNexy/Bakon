@@ -688,6 +688,46 @@ func TestHookSetEmptyFails(t *testing.T) {
 	}
 }
 
+func TestVersionSourceAndHookEnvironment(t *testing.T) {
+	app, tmp := newTestApp(t, 100)
+	file := filepath.Join(tmp, "f.txt")
+	marker := filepath.Join(tmp, "hook.txt")
+	mustSetContent(t, file, "base\n")
+	app.Editor = overwriteEditor(t, tmp, "v1\n")
+	if _, err := app.Edit(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.HookSet(file, "printf '%s|%s|%s|%s' \"$BAKON_FILE\" \"$BAKON_VERSION\" \"$BAKON_SOURCE\" \"$BAKON_PREV\" > "+quoteArg(marker)); err != nil {
+		t.Fatal(err)
+	}
+	app.Editor = overwriteEditor(t, tmp, "v2\n")
+	if _, err := app.Edit(file); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := file + "|2|edit|1"
+	if string(data) != want {
+		t.Fatalf("hook environment = %q, want %q", data, want)
+	}
+	infos, err := app.Log(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if infos[0].Source != "edit" {
+		t.Fatalf("edit source = %q", infos[0].Source)
+	}
+	if _, err := app.Revert(file, 0); err != nil {
+		t.Fatal(err)
+	}
+	infos, err = app.Log(file)
+	if err != nil || infos[0].Source != "revert" {
+		t.Fatalf("revert source = %q, err=%v", infos[0].Source, err)
+	}
+}
+
 func TestUnmanagedOperationsFail(t *testing.T) {
 	app, tmp := newTestApp(t, 100)
 	file := filepath.Join(tmp, "f.txt")

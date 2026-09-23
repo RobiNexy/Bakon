@@ -66,5 +66,19 @@ for platform in "${PLATFORMS[@]}"; do
 	echo "built $name"
 done
 
+# Termux uses the Linux arm64 ABI. Publish a named alias so the release page
+# makes the supported Android target explicit without requiring users to infer
+# it from the generic Linux artifact.
+TERMUX_NAME="bakon_${VERSION}_termux-arm64"
+TERMUX_DIR="$DIST/$TERMUX_NAME"
+mkdir -p "$TERMUX_DIR"
+export GOOS=linux GOARCH=arm64 CGO_ENABLED=0
+unset GOARM 2>/dev/null || true
+go build -trimpath -ldflags "$LDFLAGS" -o "$TERMUX_DIR/bakon" .
+cp README.md LICENSE "$TERMUX_DIR/"
+tar -czf "$DIST/$TERMUX_NAME.tar.gz" -C "$DIST" "$TERMUX_NAME"
+rm -rf "$TERMUX_DIR"
+echo "built $TERMUX_NAME"
+
 (cd "$DIST" && sha256sum ./*.tar.gz ./*.zip > checksums.txt)
 echo "artifacts in $DIST/"

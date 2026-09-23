@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -17,17 +19,68 @@ type Config struct {
 	Editor    string    `toml:"editor"`
 	Store     string    `toml:"store"`
 	Retention Retention `toml:"retention"`
+	Output    Output    `toml:"output"`
+}
+
+type Output struct {
+	Color  string `toml:"color"`
+	Format string `toml:"format"`
 }
 
 const DefaultMaxVersions = 100
 
 // DefaultPath 返回配置文件位置：~/.bakon/config.toml。
 func DefaultPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".bakon/config.toml"
+	if root := os.Getenv("BAKON_HOME"); root != "" {
+		return filepath.Join(root, "config.toml")
 	}
-	return filepath.Join(home, ".bakon", "config.toml")
+	if os.Getenv("XDG_CONFIG_HOME") == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, ".bakon", "config.toml")
+		}
+	}
+	return filepath.Join(configHome(), "bakon", "config.toml")
+}
+
+func configHome() string {
+	if root := os.Getenv("BAKON_HOME"); root != "" {
+		return root
+	}
+	if root := os.Getenv("XDG_CONFIG_HOME"); root != "" {
+		return root
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		// Keep the historical location as a compatibility fallback when no
+		// XDG directory was configured explicitly.
+		return home
+	}
+	return ".config"
+}
+
+func dataHome() string {
+	if root := os.Getenv("BAKON_HOME"); root != "" {
+		return root
+	}
+	if root := os.Getenv("XDG_DATA_HOME"); root != "" {
+		return root
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return filepath.Join(".local", "share")
+}
+
+// DefaultStore returns the persistent repository location under XDG data.
+func DefaultStore() string {
+	if os.Getenv("BAKON_HOME") != "" {
+		return filepath.Join(dataHome(), "repo")
+	}
+	if os.Getenv("XDG_DATA_HOME") != "" {
+		return filepath.Join(dataHome(), "bakon", "repo")
+	}
+	// The literal keeps old config templates portable; ExpandHome resolves it
+	// when the application opens the repository.
+	return "~/.bakon/repo"
 }
 
 // Load 读取配置。文件不存在时返回默认值，不视为错误。
@@ -35,20 +88,59 @@ func DefaultPath() string {
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Editor:    "",
-		Store:     "~/.bakon/repo",
+		Store:     DefaultStore(),
 		Retention: Retention{MaxVersions: DefaultMaxVersions},
+		Output:    Output{Color: "auto", Format: "human"},
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
+	paths := []string{}
+	// An explicitly selected file is an isolated project configuration. This
+	// keeps --config deterministic; the default path receives system and user
+	// layers below.
+	if path == "" || path == DefaultPath() {
+		if system := filepath.Join("/etc", "bakon", "config.toml"); system != path {
+			paths = append(paths, system)
 		}
-		return nil, err
+		if user := DefaultPath(); user != path {
+			paths = append(paths, user)
+		}
 	}
-	if err := toml.Unmarshal(data, cfg); err != nil {
-		return nil, err
+	if path != "" {
+		paths = append(paths, path)
 	}
+	for _, candidate := range paths {
+		data, err := os.ReadFile(candidate)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		if err := toml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", candidate, err)
+		}
+	}
+	applyEnv(cfg)
 	return cfg, nil
+}
+
+func applyEnv(cfg *Config) {
+	if v := os.Getenv("BAKON_EDITOR"); v != "" {
+		cfg.Editor = v
+	}
+	if v := os.Getenv("BAKON_STORE"); v != "" {
+		cfg.Store = v
+	}
+	if v := os.Getenv("BAKON_RETENTION_MAX_VERSIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Retention.MaxVersions = n
+		}
+	}
+	if v := os.Getenv("BAKON_FORMAT"); v != "" {
+		cfg.Output.Format = v
+	}
+	if v := os.Getenv("BAKON_COLOR"); v != "" {
+		cfg.Output.Color = v
+	}
 }
 
 // Template 返回带注释的默认配置模板，供 bakon config init 使用。
@@ -57,15 +149,21 @@ func Template() string {
 
 # 编辑器命令，可带参数（如 "code -w"）。
 # 优先级：此配置 > $VISUAL/$EDITOR > 缺省 vi
-editor = "vim"
+editor = ""
 
 # 版本仓库位置（存放全部版本历史的 git 仓库）
-store = "~/.bakon/repo"
+store = "` + DefaultStore() + `"
 
 [retention]
 # 每个文件保留的最大版本数；0 = 不限制。
 # 可被 index.json 中 per-file 的 max_versions 覆盖。
 max_versions = 100
+
+[output]
+# auto | always | never
+color = "auto"
+# human | plain | json
+format = "human"
 `
 }
 
@@ -113,4 +211,18 @@ func (c *Config) EffectiveEditor() string {
 		}
 	}
 	return "vi"
+}
+
+// Validate checks values that would otherwise cause ambiguous CLI output.
+func (c *Config) Validate() error {
+	if c.Retention.MaxVersions < 0 {
+		return fmt.Errorf("retention.max_versions must be >= 0")
+	}
+	if c.Output.Format != "human" && c.Output.Format != "plain" && c.Output.Format != "json" && c.Output.Format != "" {
+		return fmt.Errorf("output.format must be human, plain, or json")
+	}
+	if c.Output.Color != "auto" && c.Output.Color != "always" && c.Output.Color != "never" && c.Output.Color != "" {
+		return fmt.Errorf("output.color must be auto, always, or never")
+	}
+	return nil
 }

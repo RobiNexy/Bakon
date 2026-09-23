@@ -18,7 +18,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: build all platforms
-        run: scripts/build.sh
+        run: VERSION="${GITHUB_REF_NAME}" scripts/build.sh
+      - name: verify Termux arm64 artifact
+        run: test -f "dist/bakon_${GITHUB_REF_NAME}_termux-arm64.tar.gz"
       - name: create release
         uses: softprops/action-gh-release@v2
         with:

@@ -128,7 +128,7 @@ func (r *Repo) ChangedBlob(commit string) (path, blob string, err error) {
 		return "", "", err
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		if line == "" || strings.HasPrefix(line, "0{0,40}") {
+		if line == "" {
 			continue
 		}
 		tab := strings.IndexByte(line, '\t')
@@ -167,16 +167,37 @@ func (r *Repo) Diff(c1, c2, rel string) ([]byte, error) {
 // --only 限定只提交该路径，防御仓库被外部操作污染时夹带其他变更。
 func (r *Repo) CommitVersion(rel string, content []byte, msg string) error {
 	dst := r.Dir + "/" + rel
-	if err := os.MkdirAll(parentDir(dst), 0o755); err != nil {
+	parent := parentDir(dst)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, content, 0o644); err != nil {
+	tmp, err := os.CreateTemp(parent, ".version-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
 		return err
 	}
 	if _, err := r.run("add", "--", rel); err != nil {
 		return err
 	}
-	_, err := r.run("commit", "-m", msg, "--only", "--", rel)
+	_, err = r.run("commit", "-m", msg, "--only", "--", rel)
 	return err
 }
 

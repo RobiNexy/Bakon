@@ -2,105 +2,81 @@
 
 > Effortlessly keep version history while editing critical files.
 
-[English](README.en.md) | 中文
+[English](README.en.md) | [中文](README.md)
 
 [![CI](https://github.com/RobiNexy/Bakon/actions/workflows/ci.yml/badge.svg)](https://github.com/RobiNexy/Bakon/actions/workflows/ci.yml)
 
-Bakon is a single-machine command-line tool: when you edit critical files like `nginx.conf`, `hosts`, or crontab with your familiar editor, Bakon quietly stores every change into a git repository, supports viewing diffs, exporting historical versions, one-click rollback, and can automatically run a hook after a file changes (e.g. `systemctl reload nginx`).
+Bakon is a single-machine command-line file version manager. It lets your usual editor modify critical files such as `nginx.conf`, `hosts`, and crontabs in place while saving every change to a private Git repository. View history, compare versions, export snapshots, and roll back without overwriting history.
 
-- **Single machine, single user, no collaboration** — no remote, no branches, no conflicts
-- **Depends only on `git`** as the version storage engine
-- **Doesn't touch your workflow** — the editor edits the target file in place; Bakon only keeps copies inside its repository
-
-## Features
-
-- `edit`: opens the editor in the foreground; silent exit if content is unchanged, automatic new version if changed
-- Per-file **integer version numbers** (ver), append-only, rollback never overwrites history
-- Per-file **retention limit** (oldest versions pruned automatically) and **change hooks**
-- Concurrency-safe: a file lock serializes all write operations
-- Ships as static binaries covering Linux / macOS / Windows / Android Termux
+- Single machine and single user; no remotes, collaboration, or merge branches
+- Per-file append-only integer versions; rollback creates a new version
+- The target file is edited in place; Bakon stores copies only in its repository
+- Per-file retention, hooks, atomic writes, and serialized write operations
 
 ## Installation
 
-**Option 1: download a prebuilt archive** (recommended)
-
-Download the archive for your platform from [Releases](../../releases). sha256 checksums are in `checksums.txt`.
+Download a platform archive from [Releases](../../releases). Checksums are in `checksums.txt`.
 
 | Archive | Platform |
 |---|---|
 | `bakon_<ver>_linux-amd64.tar.gz` | Linux x86-64 |
-| `bakon_<ver>_linux-arm64.tar.gz` | Linux arm64 / **Android Termux (aarch64)** |
-| `bakon_<ver>_linux-armv7.tar.gz` | Linux armv7 / Android Termux (32-bit) |
-| `bakon_<ver>_darwin-amd64.tar.gz` | macOS (Intel) |
-| `bakon_<ver>_darwin-arm64.tar.gz` | macOS (Apple Silicon) |
+| `bakon_<ver>_linux-arm64.tar.gz` | Linux arm64 |
+| `bakon_<ver>_termux-arm64.tar.gz` | Android Termux aarch64 |
+| `bakon_<ver>_linux-armv7.tar.gz` | Linux armv7 / Android Termux 32-bit |
+| `bakon_<ver>_darwin-amd64.tar.gz` | macOS Intel |
+| `bakon_<ver>_darwin-arm64.tar.gz` | macOS Apple Silicon |
 | `bakon_<ver>_windows-amd64.zip` | Windows x86-64 |
 | `bakon_<ver>_windows-arm64.zip` | Windows arm64 |
 
+### Linux / macOS
+
 ```sh
-# Linux / macOS (replace BAKON_VER with the latest tag):
 BAKON_VER=v0.1.0
 curl -fLo /tmp/bakon.tar.gz \
   "https://github.com/RobiNexy/Bakon/releases/download/${BAKON_VER}/bakon_${BAKON_VER}_linux-amd64.tar.gz"
 tar -xzf /tmp/bakon.tar.gz -C /tmp
-mv "/tmp/bakon_${BAKON_VER}_linux-amd64/bakon" /usr/local/bin/
-
-# Windows (PowerShell):
-Invoke-WebRequest `
-  "https://github.com/RobiNexy/Bakon/releases/download/v0.1.0/bakon_v0.1.0_windows-amd64.zip" `
-  -OutFile bakon.zip
-Expand-Archive bakon.zip
+install /tmp/bakon_${BAKON_VER}_linux-amd64/bakon ~/.local/bin/bakon
 ```
 
-**Option 2: go install**
+### Android Termux
+
+Termux has a dedicated `termux-arm64` archive. `git` is still required at runtime.
+
+```sh
+pkg install git
+BAKON_VER=v0.1.0
+curl -fLo /tmp/bakon.tar.gz \
+  "https://github.com/RobiNexy/Bakon/releases/download/${BAKON_VER}/bakon_${BAKON_VER}_termux-arm64.tar.gz"
+tar -xzf /tmp/bakon.tar.gz -C /tmp
+mkdir -p "$PREFIX/bin"
+install /tmp/bakon_${BAKON_VER}_termux-arm64/bakon "$PREFIX/bin/bakon"
+```
+
+### From source
 
 ```sh
 go install github.com/RobiNexy/Bakon@latest
 ```
 
-**Option 3: build from source**
+Or:
 
 ```sh
 git clone https://github.com/RobiNexy/Bakon && cd Bakon
-scripts/build.sh          # per-platform archives in dist/
-go build .                # or build for this machine only
+go build .
 ```
 
-**Android Termux** (requires installing git at runtime):
+Runtime dependencies are the system `git` command. Editors and hooks run through `sh` on Unix and `cmd /C` on Windows.
+
+## Quick Start
 
 ```sh
-pkg install git
-BAKON_VER=v0.1.0   # replace with the latest tag
-curl -fLo /tmp/bakon.tar.gz \
-  "https://github.com/RobiNexy/Bakon/releases/download/${BAKON_VER}/bakon_${BAKON_VER}_linux-arm64.tar.gz"
-tar -xzf /tmp/bakon.tar.gz -C /tmp
-mv "/tmp/bakon_${BAKON_VER}_linux-arm64/bakon" $PREFIX/bin/
-```
-
-> Runtime dependencies: `git` (Bakon calls the system git as its storage engine) and a shell (the editor and hooks are launched through a shell: `sh` on unix, `cmd /C` on Windows — hook scripts must be executable on the target platform on their own).
-
-## Quick start
-
-```sh
-# 1. Edit any file, Bakon takes over version history automatically
+# The first edit stores the pre-adoption content as version 0
 bakon edit /etc/nginx/nginx.conf
 
-# 2. View history
 bakon log /etc/nginx/nginx.conf
-#   #  ver   time                  size
-#     3     2025-01-15 10:23:41   1.2K
-#     2     2025-01-10 09:01:12   1.1K
-#     1     2025-01-03 18:47:00   1.0K
-
-# 3. See the diff (defaults to the two most recent versions)
 bakon diff /etc/nginx/nginx.conf
-
-# 4. Export a version's content
 bakon show /etc/nginx/nginx.conf 2
-
-# 5. Roll back to version 2 (history untouched, creates a new version)
 bakon revert /etc/nginx/nginx.conf 2
-
-# 6. Auto-reload after the file changes
 bakon hook set /etc/nginx/nginx.conf "systemctl reload nginx"
 ```
 
@@ -108,65 +84,75 @@ bakon hook set /etc/nginx/nginx.conf "systemctl reload nginx"
 
 | Command | Purpose |
 |---|---|
-| `bakon edit <file>` | Open the editor; silent exit if unchanged, new version if changed; the first edit records baseline version 0 automatically |
-| `bakon log <file>` | List historical versions (number, time, size) |
-| `bakon diff <file> [v1] [v2]` | Compare versions; defaults to the two most recent; one argument compares the previous version |
-| `bakon show <file> <v>` | Print the full content of a version |
-| `bakon revert <file> <v>` | Restore to a version, committed as a new version (version 0 = the original state at adoption time) |
+| `bakon edit <file>` | Open the editor and commit a new version when content changes |
+| `bakon log <file>` | List history; `--format json` emits JSON Lines |
+| `bakon diff <file> [v1] [v2]` | Compare versions; exits 1 when differences are found |
+| `bakon show <file> <v>` | Print a version's content |
+| `bakon dump <file> <v>` | Write a version as binary-safe pipeline data |
+| `bakon revert <file> <v>` | Restore a version and append a new version |
 | `bakon ls` | List all managed files |
-| `bakon mv <old> <new>` | Update the path mapping, keeping history |
-| `bakon prune [<file>]` | Trim history manually; defaults to all files. Pruning also happens automatically when a commit exceeds the limit (see below) |
-| `bakon hook set/unset/show` | Manage per-file change hooks |
-| `bakon config show` | Show effective configuration and file locations |
-| `bakon config init` | Write the commented default config file (never overwrites) |
-| `bakon version` | Print version information |
+| `bakon mv <old> <new>` | Update a path mapping while keeping history |
+| `bakon prune [<file>]` | Trim history according to retention limits |
+| `bakon hook set/unset/show` | Manage a file's change hook |
+| `bakon path <file>` | Print the stable internal mapping |
+| `bakon verify` | Check repository and index consistency |
+| `bakon config show/init` | Show or initialize configuration |
+| `bakon version` | Print version and build information |
+
+Global options: `--config`, `--store`, `--format human|plain|json`, `--no-color`, and `--no-hook`.
 
 ## Configuration
 
-The config file lives at `~/.bakon/config.toml` (use `bakon config show` to see the actual path and effective values; the global `--config` flag selects a different location). **When the file is absent, every command still works with defaults** — no pre-initialization needed. To get an editable, commented config, run `bakon config init` (never overwrites an existing one).
+The default configuration follows XDG locations:
+
+- Config: `$XDG_CONFIG_HOME/bakon/config.toml`
+- Repository: `$XDG_DATA_HOME/bakon/repo/`
+- When XDG variables are unset, the historical `~/.bakon/` location remains supported
+- `BAKON_HOME` places config and repository data in an isolated directory
 
 ```toml
-editor = "vim"              # editor; priority: config > $EDITOR > vi
-store  = "~/.bakon/repo"    # repository location
+editor = ""                 # config > BAKON_EDITOR > VISUAL > EDITOR > vi
+store = "~/.bakon/repo"
 
 [retention]
-max_versions = 100          # per-file retention limit; 0 = unlimited
+max_versions = 100           # 0 = unlimited
+
+[output]
+color = "auto"              # auto | always | never
+format = "human"             # human | plain | json
 ```
 
-Per-file settings (`max_versions`, `hook`) live in the repository's `index.json`, managed via the `bakon hook` commands, not in the global config.
+Environment overrides include `BAKON_EDITOR`, `BAKON_STORE`, `BAKON_FORMAT`, `BAKON_COLOR`, and `BAKON_RETENTION_MAX_VERSIONS`. Per-file `hook` and `max_versions` settings live in the repository's `index.json`.
 
-## Hooks and permissions (sudo)
+## Hooks
 
-A hook is **any shell command**: writing `sudo systemctl reload nginx` runs it as-is; Bakon does not intercept, interpret, or escalate on your behalf — what matters is the identity it runs as:
-
-| Running as | Recommendation |
-|---|---|
-| root (the typical way to edit `/etc` files) | **Don't write sudo** in hooks — plain `systemctl reload nginx`; Bakon is already root, and wrapping sudo fails on some sudoers setups (e.g. `requiretty`) |
-| non-root user, hook needs root | When `sudo` cannot read a password (no TTY, and the hook's stdin is `/dev/null`) it **fails immediately instead of hanging**; the error output is visible and Bakon exits with code 2 while the version is saved. The right fix: a precise sudoers whitelist |
-
-Example of a precise sudoers whitelist (least privilege, one command only):
+A hook runs after a new version is created by `edit` or `revert`, while the repository lock is still held. It receives:
 
 ```text
-samphi ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx
+BAKON_FILE       absolute target path
+BAKON_VERSION    new version number
+BAKON_SOURCE     edit or revert
+BAKON_PREV       previous version number; empty for the first version
 ```
 
-Alternatives: polkit (`pkexec`), or a systemd path unit watching the file instead of a hook. Bakon does not cache credentials and does not escalate — part of the "no permission hardening" boundary.
+Hook failure does not roll back a saved version and exits with code 5. Use `--no-hook` to skip hooks for an emergency operation.
 
-> sudo's exact behavior without a TTY varies by version and sudoers configuration [inferred from common patterns]; verify with `sudo -l -n` on the target environment.
+## Exit Codes
 
-## Key points
+| Code | Meaning |
+|---:|---|
+| 0 | Success |
+| 1 | Diff found differences or generic failure |
+| 2 | Usage or argument error |
+| 3 | File/version not found, or version was pruned |
+| 4 | Lock contention or state conflict |
+| 5 | Version saved, but hook failed |
+| 6 | Corrupt or inconsistent repository |
+| 70 | Internal error |
 
-- **The first edit records baseline version 0**: the first `bakon edit` of a file commits the content at adoption time as version 0 before launching the editor; later changes start at version 1. `bakon revert <file> 0` restores the original pre-adoption state. The baseline commit does not fire hooks (a hook means "content changed"; the baseline changes nothing).
-- **Prune has two triggers**: after an edit/revert commit, a file whose version count exceeds the effective limit is **automatically** pruned from the oldest; `bakon prune [<file>]` triggers it **manually** (all files or one), idempotent — it prints "nothing to prune" when within limits.
-- **ver numbers are never recycled**: after pruning, `log` starts from the oldest retained version; assigned numbers are never reused.
-- **revert creates a new version**: rollback is an appended commit, history is never rewritten; if the target content matches the current version, no new version is created.
-- **Pruned versions are unrecoverable**: `show`/`revert` of a pruned number reports `has been pruned` (distinct from a never-existing `no version N`).
-- **No data loss on crash**: if the process dies after the editor exits but before the commit, the target file is changed while the repository has no version — the next `bakon edit` commits the current content as a new version. No recovery mechanism needed.
-- **Concurrency model**: write operations (edit/revert/prune/mv/hook set) are serialized by the repository file lock; read-only commands (ls/log/diff/show) **take no lock** — atomic index writes + immutable git objects guarantee no torn state, at the cost of a snapshot that may lag one commit behind, and they are never blocked by someone else's pending editor session.
-- **Hooks fire when a new version is created** (after an edit or revert commit), run inside the file lock; a hook failure does not affect the completed version commit, and the process exits with code 2.
-- **Exit codes**: `0` success; `1` operation failure; `2` version saved but hook failed.
+Version numbers are never recycled by `prune`; pruned versions cannot be recovered. Reverting to content that already matches the current version does not create an empty version.
 
-The design document is at [docs/design.md](docs/design.md).
+Design documents: [docs/design.md](docs/design.md) · [docs/new_design.md](docs/new_design.md)
 
 ## License
 
